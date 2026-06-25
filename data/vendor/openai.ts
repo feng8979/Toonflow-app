@@ -194,6 +194,25 @@ const resolveOpenAIImageSize = (aspectRatio: string): string => {
   return w > h ? "1536x1024" : "1024x1536";
 };
 
+const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs = 600000): Promise<Response> => {
+  if (typeof AbortController === "undefined" || typeof setTimeout === "undefined" || typeof clearTimeout === "undefined") {
+    return await fetch(url, options);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err: any) {
+    if (err?.name === "AbortError") {
+      throw new Error(`Image generation request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
   const effortMap: Record<0 | 1 | 2 | 3, "low" | "medium" | "high" | "xhigh"> = {
     0: "low",
@@ -243,7 +262,7 @@ const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<str
   }
 
   logger(`[OpenAI-compatible image] model=${model.modelName}, size=${body.size}, refs=${imageRefs.length}`);
-  const res = await fetch(`${getBaseUrl()}/images/generations`, {
+  const res = await fetchWithTimeout(`${getBaseUrl()}/images/generations`, {
     method: "POST",
     headers: getHeaders(),
     body: JSON.stringify(body),
