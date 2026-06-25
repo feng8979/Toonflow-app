@@ -51,9 +51,14 @@ interface VendorConfig {
   inputValues: Record<string, string>;
   models: (TextModel | ImageModel | VideoModel | TTSModel)[];
 }
+type ReferenceList =
+  | { type: "image"; sourceType?: "base64"; base64: string }
+  | { type: "audio"; sourceType?: "base64"; base64: string }
+  | { type: "video"; sourceType?: "base64"; base64: string };
 interface ImageConfig {
   prompt: string;
-  imageBase64: string[];
+  referenceList?: Extract<ReferenceList, { type: "image" }>[];
+  imageBase64?: string[];
   size: "1K" | "2K" | "4K";
   aspectRatio: `${number}:${number}`;
 }
@@ -136,13 +141,135 @@ const vendor: VendorConfig = {
 // ============================================================
 // 适配器函数
 // ============================================================
-const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
-  if (!vendor.inputValues.apiKey) throw new Error("缺少API Key");
-  const apiKey = vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
-  return createOpenAI({ baseURL: vendor.inputValues.baseUrl, apiKey }).chat(model.modelName);
+const getBaseUrl = () => {
+  if (!vendor.inputValues.baseUrl) throw new Error("Missing OpenAI-compatible baseUrl");
+  return vendor.inputValues.baseUrl.replace(/\/+$/, "");
 };
+
+const getApiKey = () => {
+  if (!vendor.inputValues.apiKey) throw new Error("Missing API Key");
+  return vendor.inputValues.apiKey.replace(/^Bearer\s+/i, "");
+};
+
+const getHeaders = () => ({
+  "Content-Type": "application/json",
+  Authorization: `Bearer ${getApiKey()}`,
+});
+
+const readByPath = (obj: any, path: string): any => {
+  if (!obj || !path) return undefined;
+  const normalizedPath = path.replace(/\[(\d+)\]/g, ".$1");
+  return normalizedPath.split(".").reduce((acc, key) => (acc == null ? undefined : acc[key]), obj);
+};
+
+const pickFirstPath = (obj: any, paths: string[]): any => {
+  for (const path of paths) {
+    const value = readByPath(obj, path);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return undefined;
+};
+
+const extractB64 = (data: any): string | undefined => {
+  return pickFirstPath(data, ["b64_json", "image", "data.b64_json", "data.image", "data.0.b64_json", "data[0].b64_json"]);
+};
+
+const extractUrl = (data: any): string | undefined => {
+  return pickFirstPath(data, ["url", "image_url", "data.url", "data.image_url", "data.0.url", "data[0].url", "output.url"]);
+};
+
+const extractError = (data: any): string | undefined => {
+  return pickFirstPath(data, ["error.message", "message", "msg", "data.error.message", "data.message"]);
+};
+
+const ensureImageDataUrl = (value: string): string => {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("data:")) return trimmed;
+  return `data:image/png;base64,${trimmed}`;
+};
+
+const resolveOpenAIImageSize = (aspectRatio: string): string => {
+  const [w, h] = aspectRatio.split(":").map(Number);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w === h) return "1024x1024";
+  return w > h ? "1536x1024" : "1024x1536";
+};
+
+const textRequest = (model: TextModel, think: boolean, thinkLevel: 0 | 1 | 2 | 3) => {
+  const effortMap: Record<0 | 1 | 2 | 3, "low" | "medium" | "high" | "xhigh"> = {
+    0: "low",
+    1: "medium",
+    2: "high",
+    3: "xhigh",
+  };
+  const reasoningEffort = effortMap[thinkLevel];
+  const enableReasoning = !!model.think;
+
+  return createOpenAICompatible({
+    name: "openai-compatible",
+    baseURL: getBaseUrl(),
+    apiKey: getApiKey(),
+    fetch: async (url: string, options?: RequestInit) => {
+      const rawBody = JSON.parse((options?.body as string) ?? "{}");
+      const body = enableReasoning
+        ? {
+            ...rawBody,
+            reasoning_effort: reasoningEffort,
+          }
+        : rawBody;
+      return await fetch(url, {
+        ...options,
+        body: JSON.stringify(body),
+      });
+    },
+  }).chatModel(model.modelName);
+};
+
 const imageRequest = async (config: ImageConfig, model: ImageModel): Promise<string> => {
-  return "";
+  const imageRefs = [
+    ...(config.referenceList || []).map((ref) => ref.base64),
+    ...(config.imageBase64 || []),
+  ].filter(Boolean);
+
+  const body: any = {
+    model: model.modelName,
+    prompt: config.prompt || "",
+    n: 1,
+    size: resolveOpenAIImageSize(config.aspectRatio || "1:1"),
+    response_format: "b64_json",
+  };
+
+  if (imageRefs.length > 0) {
+    body.images = imageRefs;
+  }
+
+  logger(`[OpenAI-compatible image] model=${model.modelName}, size=${body.size}, refs=${imageRefs.length}`);
+  const res = await fetch(`${getBaseUrl()}/images/generations`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Image generation request failed: ${errorText}`);
+  }
+
+  const response = await res.json();
+  const errorMessage = extractError(response);
+  if (response?.error || errorMessage) {
+    throw new Error(`Image generation failed: ${errorMessage || response.error?.code || "unknown error"}`);
+  }
+
+  const b64 = extractB64(response);
+  if (b64) return ensureImageDataUrl(b64);
+
+  const url = extractUrl(response);
+  if (url) {
+    if (url.startsWith("data:")) return url;
+    return await urlToBase64(url);
+  }
+
+  throw new Error(`Image generation failed: no image data returned. Response: ${JSON.stringify(response).slice(0, 500)}`);
 };
 const videoRequest = async (config: VideoConfig, model: VideoModel): Promise<string> => {
   return "";

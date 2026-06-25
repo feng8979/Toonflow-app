@@ -4,6 +4,7 @@ import pLimit from "p-limit";
 import * as zod from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { buildAssetPromptGuard } from "./promptGuard";
 const router = express.Router();
 interface OutlineItem {
   description: string;
@@ -100,14 +101,16 @@ export default router.post(
           await u.db("o_assets").where("id", item.assetsId).update({ promptState: "生成失败", promptErrorReason: "视觉手册未定义" });
           return;
         }
-        const systemPrompt = visualManual;
+        const promptGuard = buildAssetPromptGuard(config.nameLabel, item.name, item.describe);
+        const systemPrompt = `${visualManual}\n\n${promptGuard}`;
         try {
           const { _output } = (await u.Ai.Text("universalAi").invoke({
             system: systemPrompt + "\n" + otherTextPrompt,
             messages: [
               {
                 role: "user",
-                content: `
+                content: `${promptGuard}
+
                     **基础参数：**
       **${config.nameLabel}设定：**
       - ${config.nameLabel}名称:${item.name},

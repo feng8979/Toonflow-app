@@ -3,6 +3,7 @@ import u from "@/utils";
 import * as zod from "zod";
 import { error, success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
+import { buildAssetPromptGuard } from "./promptGuard";
 const router = express.Router();
 
 
@@ -60,14 +61,17 @@ export default router.post(
     //获取到视觉手册
     const visualManual = await u.getArtPrompt(project.artStyle as string, "art_skills", config.visualManual);
     if (!visualManual) return res.status(500).send(error("视觉手册未定义"));
-    const systemPrompt = visualManual;
+    const promptGuard = buildAssetPromptGuard(config.nameLabel, name, describe);
+    const systemPrompt = `${visualManual}\n\n${promptGuard}`;
     try {
       const { _output } = (await u.Ai.Text("universalAi").invoke({
         system: systemPrompt,
         messages: [
           {
             role: "user",
-            content: `**基础参数：**
+            content: `${promptGuard}
+
+**基础参数：**
       **${config.nameLabel}设定：**
       - ${config.nameLabel}名称:${name},
       - ${config.nameLabel}描述:${describe},`,

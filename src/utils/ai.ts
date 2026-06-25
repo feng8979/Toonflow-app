@@ -243,6 +243,18 @@ interface TaskRecord {
   projectId: number; // 项目ID
 }
 
+function assertImageResult(result: unknown): string {
+  if (typeof result !== "string" || !result.trim()) {
+    throw new Error("图片生成失败：供应商未返回图片数据");
+  }
+  const trimmed = result.trim();
+  if (!trimmed.startsWith("http")) {
+    const payload = trimmed.replace(/^data:[^;]+;base64,/, "").trim();
+    if (!payload) throw new Error("图片生成失败：供应商返回的图片数据为空");
+  }
+  return trimmed;
+}
+
 class AiImage {
   private key: `${string}:${string}`;
   private result: string = "";
@@ -255,7 +267,9 @@ class AiImage {
       const fn = await getVendorTemplateFn("imageRequest", mn);
       await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
       this.result = await fn(input);
+      this.result = assertImageResult(this.result);
       if (this.result.startsWith("http")) this.result = await urlToBase64(this.result);
+      this.result = assertImageResult(this.result);
       return this;
     };
     if (taskRecord) {
@@ -266,6 +280,7 @@ class AiImage {
     return this;
   }
   async save(path: string) {
+    this.result = assertImageResult(this.result);
     await u.oss.writeFile(path, this.result);
     return this;
   }

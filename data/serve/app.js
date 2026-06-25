@@ -236938,6 +236938,17 @@ function referenceList2imageBase642(id, input) {
   }
   return input;
 }
+function assertImageResult(result) {
+  if (typeof result !== "string" || !result.trim()) {
+    throw new Error("\u56FE\u7247\u751F\u6210\u5931\u8D25\uFF1A\u4F9B\u5E94\u5546\u672A\u8FD4\u56DE\u56FE\u7247\u6570\u636E");
+  }
+  const trimmed = result.trim();
+  if (!trimmed.startsWith("http")) {
+    const payload = trimmed.replace(/^data:[^;]+;base64,/, "").trim();
+    if (!payload) throw new Error("\u56FE\u7247\u751F\u6210\u5931\u8D25\uFF1A\u4F9B\u5E94\u5546\u8FD4\u56DE\u7684\u56FE\u7247\u6570\u636E\u4E3A\u7A7A");
+  }
+  return trimmed;
+}
 var import_sucrase2, AiTypeValues, AiText, AiImage, AiVideo, AiAudio, ai_default;
 var init_ai = __esm({
   "src/utils/ai.ts"() {
@@ -237019,7 +237030,9 @@ var init_ai = __esm({
           const fn = await getVendorTemplateFn("imageRequest", mn);
           await referenceList2imageBase642(mn.split(/:(.+)/)[0], input);
           this.result = await fn(input);
+          this.result = assertImageResult(this.result);
           if (this.result.startsWith("http")) this.result = await urlToBase642(this.result);
+          this.result = assertImageResult(this.result);
           return this;
         };
         if (taskRecord2) {
@@ -237030,6 +237043,7 @@ var init_ai = __esm({
         return this;
       }
       async save(path34) {
+        this.result = assertImageResult(this.result);
         await utils_default.oss.writeFile(path34, this.result);
         return this;
       }
@@ -238636,7 +238650,7 @@ var init_batchGenerateImageAssets = __esm({
                 relatedObjects: JSON.stringify(relatedObjects)
               }
             );
-            aiImage.save(imagePath);
+            await aiImage.save(imagePath);
             const imageData = await utils_default.db("o_image").where("id", imageId).select("*").first();
             if (!imageData) return res.status(500).send("\u8D44\u4EA7\u5DF2\u88AB\u5220\u9664");
             if (!imageData) return;
@@ -238661,6 +238675,26 @@ var init_batchGenerateImageAssets = __esm({
   }
 });
 
+// src/routes/assetsGenerate/promptGuard.ts
+function buildAssetPromptGuard(nameLabel, name28, describe4) {
+  return [
+    "Asset prompt guard:",
+    "The visual manual is style guidance only. Do not copy any example subject, scene, name, or story from it.",
+    "Generate the final image prompt for exactly the current asset below.",
+    `Current asset type: ${nameLabel}`,
+    `Current asset name: ${name28}`,
+    `Current asset description: ${describe4}`,
+    "The output must preserve the current asset name and core description. If the manual conflicts with the current asset, the current asset wins.",
+    "Do not mention unrelated example subjects, cyber streets, neon rain, unrelated characters, or any object not supported by the current asset.",
+    "Return only the final image-generation prompt. Do not include analysis, markdown headings, confirmations, or explanations."
+  ].join("\n");
+}
+var init_promptGuard = __esm({
+  "src/routes/assetsGenerate/promptGuard.ts"() {
+    "use strict";
+  }
+});
+
 // src/routes/assetsGenerate/batchPolishAssetsPrompt.ts
 var import_express23, router23, batchPolishAssetsPrompt_default;
 var init_batchPolishAssetsPrompt = __esm({
@@ -238672,6 +238706,7 @@ var init_batchPolishAssetsPrompt = __esm({
     init_zod();
     init_responseFormat();
     init_middleware();
+    init_promptGuard();
     router23 = import_express23.default.Router();
     batchPolishAssetsPrompt_default = router23.post(
       "/",
@@ -238733,14 +238768,18 @@ var init_batchPolishAssetsPrompt = __esm({
               await utils_default.db("o_assets").where("id", item.assetsId).update({ promptState: "\u751F\u6210\u5931\u8D25", promptErrorReason: "\u89C6\u89C9\u624B\u518C\u672A\u5B9A\u4E49" });
               return;
             }
-            const systemPrompt = visualManual;
+            const promptGuard = buildAssetPromptGuard(config3.nameLabel, item.name, item.describe);
+            const systemPrompt = `${visualManual}
+
+${promptGuard}`;
             try {
               const { _output } = await utils_default.Ai.Text("universalAi").invoke({
                 system: systemPrompt + "\n" + otherTextPrompt,
                 messages: [
                   {
                     role: "user",
-                    content: `
+                    content: `${promptGuard}
+
                     **\u57FA\u7840\u53C2\u6570\uFF1A**
       **${config3.nameLabel}\u8BBE\u5B9A\uFF1A**
       - ${config3.nameLabel}\u540D\u79F0:${item.name},
@@ -238887,7 +238926,7 @@ var init_generateAssets = __esm({
             relatedObjects: JSON.stringify(relatedObjects)
           }
         );
-        aiImage.save(imagePath);
+        await aiImage.save(imagePath);
         const imageData = await utils_default.db("o_image").where("id", imageId).select("*").first();
         if (!imageData) return res.status(500).send("\u8D44\u4EA7\u5DF2\u88AB\u5220\u9664");
         if (imageData.state === "\u751F\u6210\u5931\u8D25") return;
@@ -238919,6 +238958,7 @@ var init_polishAssetsPrompt = __esm({
     init_zod();
     init_responseFormat();
     init_middleware();
+    init_promptGuard();
     router26 = import_express26.default.Router();
     polishAssetsPrompt_default = router26.post(
       "/",
@@ -238964,14 +239004,19 @@ var init_polishAssetsPrompt = __esm({
         if (!config3.visualManual) return res.status(500).send(error50("\u89C6\u89C9\u624B\u518C\u672A\u5B9A\u4E49"));
         const visualManual = await utils_default.getArtPrompt(project.artStyle, "art_skills", config3.visualManual);
         if (!visualManual) return res.status(500).send(error50("\u89C6\u89C9\u624B\u518C\u672A\u5B9A\u4E49"));
-        const systemPrompt = visualManual;
+        const promptGuard = buildAssetPromptGuard(config3.nameLabel, name28, describe4);
+        const systemPrompt = `${visualManual}
+
+${promptGuard}`;
         try {
           const { _output } = await utils_default.Ai.Text("universalAi").invoke({
             system: systemPrompt,
             messages: [
               {
                 role: "user",
-                content: `**\u57FA\u7840\u53C2\u6570\uFF1A**
+                content: `${promptGuard}
+
+**\u57FA\u7840\u53C2\u6570\uFF1A**
       **${config3.nameLabel}\u8BBE\u5B9A\uFF1A**
       - ${config3.nameLabel}\u540D\u79F0:${name28},
       - ${config3.nameLabel}\u63CF\u8FF0:${describe4},`
